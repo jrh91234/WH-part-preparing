@@ -371,11 +371,16 @@ function createJob(token, payload) {
   const rows = (payload.rows || []).filter(r => String(r.part_code || '').trim());
   if (!rows.length) throw new Error('ไม่มีรายการพาร์ท');
 
+  // แนบได้หลายไฟล์ (payload.files) — รองรับ payload.file แบบเดิมด้วย
+  const files = (payload.files || (payload.file ? [payload.file] : [])).filter(f => f && f.base64);
   let fileUrl = '';
-  if (payload.file && payload.file.base64) {
+  if (files.length) {
     const folderId = PropertiesService.getScriptProperties().getProperty('FOLDER_ID');
-    const blob = Utilities.newBlob(Utilities.base64Decode(payload.file.base64), payload.file.mimeType, payload.file.name || docNo);
-    fileUrl = (folderId ? DriveApp.getFolderById(folderId) : DriveApp.getRootFolder()).createFile(blob).getUrl();
+    const folder = folderId ? DriveApp.getFolderById(folderId) : DriveApp.getRootFolder();
+    fileUrl = files.map((f, i) => {
+      const name = docNo + (files.length > 1 ? '_' + (i + 1) : '') + '_' + (f.name || 'file');
+      return folder.createFile(Utilities.newBlob(Utilities.base64Decode(f.base64), f.mimeType, name)).getUrl();
+    }).join('\n');
   }
 
   return withLock_(() => {

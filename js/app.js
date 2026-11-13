@@ -190,7 +190,9 @@ function drawJob() {
 
   $('#jobhead').innerHTML =
     '<div class="row" style="margin:4px 0 8px"><a href="#jobs" class="btn sm">← กลับ</a><span class="grow"></span>' +
-    (j.file_url && can('leader') ? '<a class="btn sm" target="_blank" href="' + esc(j.file_url) + '">📄 ไฟล์ต้นฉบับ</a>' : '') +
+    (j.file_url && can('leader') ? String(j.file_url).split(/\s+/).filter(Boolean).map(function (u, k, all) {
+      return '<a class="btn sm" target="_blank" href="' + esc(u) + '">📄 ไฟล์' + (all.length > 1 ? ' ' + (k + 1) : 'ต้นฉบับ') + '</a>';
+    }).join('') : '') +
     (canDelete ? '<button class="btn sm danger" onclick="uiDeleteJob(\'' + esc(j.job_id) + '\', this)">ลบจ๊อบ</button>' : '') + '</div>' +
     '<div class="card"><div class="row"><h2 class="grow mono">' + esc(j.doc_no) + '</h2>' + statusBadge(j.status) + '</div>' +
     '<div class="small muted">' + esc(j.biz_type) + ' • ' + esc(j.biz_date) + ' • ' + esc(whTh(j.from_wh)) + ' → ' + esc(whTh(j.to_wh)) + '</div>' +
@@ -265,20 +267,27 @@ function uiDeleteJob(id, btn) {
   busy(btn, authed('deleteJob', id)).then(function () { toast('ลบแล้ว'); go('#jobs'); }).catch(function () {});
 }
 
-// ======================= สร้างจ๊อบ =======================
+// ======================= สร้างจ๊อบ (หลายไฟล์ / หลายเอกสาร) =======================
+// ไฟล์ที่เลือกจะถูกจัดกลุ่มตามเลขที่เอกสาร: เลขต่างกัน = คนละจ๊อบ, เลขเดียวกัน = รวมเป็นจ๊อบเดียว
+S.drafts = S.drafts || [];
+S.openDraft = -1;
+
 function renderNewJob() {
   shell('new',
     '<div class="section-title">สร้างจ๊อบจากใบโอนย้าย (直接调拨单)</div>' +
     '<div class="drop"><div class="row wrap" style="justify-content:center">' +
-    '<label class="btn primary">📄 เลือกไฟล์ PDF<input id="nj-pdf" type="file" accept="application/pdf" class="hidden"></label>' +
-    '<label class="btn">📷 ถ่ายรูปใบงาน<input id="nj-img" type="file" accept="image/*" capture="environment" class="hidden"></label>' +
+    '<label class="btn primary">📄 เลือกไฟล์ PDF<input id="nj-pdf" type="file" accept="application/pdf" multiple class="hidden"></label>' +
+    '<label class="btn">📷 ถ่ายรูป / เลือกรูป<input id="nj-img" type="file" accept="image/*" multiple class="hidden"></label>' +
     '<button class="btn" id="nj-manual">✏️ กรอกเอง</button></div>' +
-    '<div class="small muted" style="margin-top:8px">PDF จาก Kingdee อ่านได้แม่นยำ • รูปถ่ายใช้ OCR ต้องตรวจทานก่อนบันทึก</div></div>' +
+    '<div class="small muted" style="margin-top:8px">เลือกได้หลายไฟล์พร้อมกัน • ระบบแยกจ๊อบตามเลขที่เอกสารให้อัตโนมัติ (ไฟล์เลขเดียวกันจะรวมเป็นจ๊อบเดียว)<br>PDF จาก Kingdee อ่านได้แม่นยำ • รูปถ่ายใช้ OCR ต้องตรวจทานก่อนบันทึก</div></div>' +
     '<div id="nj-status"></div><div id="nj-form"></div>');
-  $('#nj-pdf').onchange = function (e) { var f = e.target.files[0]; if (f) loadPdf(f); };
-  $('#nj-img').onchange = function (e) { var f = e.target.files[0]; if (f) loadImage(f); };
-  $('#nj-manual').onclick = function () { S.draft = { doc_no: '', biz_type: '', biz_date: ymd(new Date()), rows: [emptyRow()], file: null, source: 'manual' }; drawDraft(); };
-  if (S.draft) drawDraft();
+  $('#nj-pdf').onchange = function (e) { var fs = Array.prototype.slice.call(e.target.files); e.target.value = ''; if (fs.length) loadFiles(fs, 'pdf'); };
+  $('#nj-img').onchange = function (e) { var fs = Array.prototype.slice.call(e.target.files); e.target.value = ''; if (fs.length) loadFiles(fs, 'ocr'); };
+  $('#nj-manual').onclick = function () {
+    S.drafts.push({ doc_no: '', biz_type: '', biz_date: ymd(new Date()), rows: [emptyRow()], files: [], source: 'manual' });
+    S.openDraft = S.drafts.length - 1; drawDrafts();
+  };
+  drawDrafts();
 }
 
 function emptyRow() { return { part_code: '', part_name: '', spec: '', batch_no: '', qty: 0, from_wh: '', from_loc: '', to_wh: '', to_loc: '' }; }
@@ -288,20 +297,6 @@ function readAsBase64(file) {
   return new Promise(function (res, rej) {
     var fr = new FileReader(); fr.onload = function () { res(String(fr.result).split(',')[1]); }; fr.onerror = rej; fr.readAsDataURL(file);
   });
-}
-
-function loadPdf(file) {
-  njStatus('<span class="spinner"></span> กำลังอ่าน PDF…');
-  var buf;
-  file.arrayBuffer().then(function (b) { buf = b; return parseKingdeePdf(b.slice(0), pdfjsLib); }).then(function (res) {
-    return readAsBase64(file).then(function (b64) {
-      if (!res.rows.length) { njStatus('⚠ ไม่พบตารางรายการพาร์ทในไฟล์นี้ (อาจเป็น PDF ที่สแกนเป็นรูป) — ลองใช้ "ถ่ายรูปใบงาน" หรือ "กรอกเอง"'); return; }
-      S.draft = { doc_no: res.doc_no, biz_type: res.biz_type, biz_date: res.biz_date, rows: res.rows,
-                  file: { name: file.name, mimeType: 'application/pdf', base64: b64 }, source: 'pdf' };
-      njStatus('✅ อ่านได้ ' + res.rows.length + ' รายการ — ตรวจสอบแล้วกดบันทึก');
-      drawDraft();
-    });
-  }).catch(function (e) { njStatus('❌ อ่าน PDF ไม่สำเร็จ: ' + esc(e.message)); });
 }
 
 function shrinkImage(file, maxSide) {
@@ -317,57 +312,180 @@ function shrinkImage(file, maxSide) {
   });
 }
 
-function loadImage(file) {
-  njStatus('<span class="spinner"></span> กำลังอ่านข้อความจากรูป (OCR) อาจใช้เวลา 10-20 วินาที…');
-  shrinkImage(file, 2000).then(function (b64) {
-    var f = { name: (file.name || 'photo') .replace(/\.\w+$/, '') + '.jpg', mimeType: 'image/jpeg', base64: b64 };
-    return authed('ocrImage', f).then(function (text) {
-      var res = parseKingdeeText(text || '');
-      S.draft = { doc_no: res.doc_no, biz_type: res.biz_type, biz_date: res.biz_date || ymd(new Date()),
-                  rows: res.rows.length ? res.rows : [emptyRow()], file: f, source: 'ocr' };
-      njStatus(res.rows.length ? '⚠ อ่านจากรูปได้ ' + res.rows.length + ' รายการ — <b>กรุณาตรวจทุกช่องให้ตรงกับใบงาน</b> โดยเฉพาะจำนวนและตำแหน่ง'
-                               : '⚠ อ่านรายการจากรูปไม่ได้ กรุณากรอกเอง หรือถ่ายใหม่ให้ชัดและตรง');
-      drawDraft();
-    });
-  }).catch(function (e) { njStatus('❌ ' + esc(e.message)); });
+/** อ่านไฟล์ทีละไฟล์ แล้วจัดเข้ากลุ่มตามเลขที่เอกสาร */
+function loadFiles(files, kind) {
+  var notes = [], lastOcr = null, i = 0;
+  function step() {
+    if (i >= files.length) {
+      njStatus(notes.join('<br>'));
+      drawDrafts();
+      return;
+    }
+    var file = files[i++];
+    njStatus('<span class="spinner"></span> กำลังอ่านไฟล์ ' + i + '/' + files.length + ': ' + esc(file.name) + (kind === 'ocr' ? ' (OCR อาจใช้ 10-20 วินาที/รูป)' : ''));
+    var p = kind === 'pdf' ? readPdfFile(file) : readImageFile(file);
+    p.then(function (r) {
+      if (!r.res.rows.length && kind === 'pdf') {
+        notes.push('⚠ ' + esc(file.name) + ': ไม่พบตารางรายการพาร์ท (อาจเป็น PDF ที่สแกนเป็นรูป) — ลองใช้ "ถ่ายรูป / เลือกรูป"');
+        return;
+      }
+      var d = addToDrafts(r.res, r.file, kind, kind === 'ocr' ? lastOcr : null);
+      if (kind === 'ocr') lastOcr = d;
+      notes.push((kind === 'pdf' ? '✅ ' : '⚠ ') + esc(file.name) + ' → ' + esc(d.doc_no || '(ไม่พบเลขที่เอกสาร)') + ' อ่านได้ ' + r.res.rows.length + ' รายการ' +
+        (kind === 'ocr' ? ' — <b>ต้องตรวจทุกช่อง</b>' : ''));
+    }).catch(function (e) {
+      notes.push('❌ ' + esc(file.name) + ': ' + esc(e.message));
+    }).then(step);
+  }
+  step();
+}
+
+function readPdfFile(file) {
+  return file.arrayBuffer().then(function (b) { return parseKingdeePdf(b.slice(0), pdfjsLib); }).then(function (res) {
+    return readAsBase64(file).then(function (b64) { return { res: res, file: { name: file.name, mimeType: 'application/pdf', base64: b64 } }; });
+  });
+}
+
+function readImageFile(file) {
+  return shrinkImage(file, 2000).then(function (b64) {
+    var f = { name: (file.name || 'photo').replace(/\.\w+$/, '') + '.jpg', mimeType: 'image/jpeg', base64: b64 };
+    return authed('ocrImage', f).then(function (text) { return { res: parseKingdeeText(text || ''), file: f }; });
+  });
+}
+
+/** ใส่ผลการอ่านเข้ากลุ่มเอกสารเดิม (เลขเดียวกัน) หรือสร้างกลุ่มใหม่ */
+function addToDrafts(res, file, source, fallback) {
+  var key = String(res.doc_no || '').trim();
+  var d = key ? S.drafts.filter(function (x) { return x.doc_no.trim() === key; })[0] : null;
+  if (!d && !key && fallback) d = fallback;           // รูปหน้าถัดไปที่อ่านเลขเอกสารไม่ได้ → รวมกับรูปก่อนหน้า
+  if (d) {
+    if (d.files.some(function (f) { return f.name === file.name && f.base64.length === file.base64.length; })) return d; // เลือกไฟล์ซ้ำ
+    if (d.rows.length === 1 && !d.rows[0].part_code) d.rows = [];
+    d.rows = d.rows.concat(res.rows);
+    d.files.push(file);
+    if (!d.doc_no && key) d.doc_no = key;
+    d.biz_type = d.biz_type || res.biz_type; d.biz_date = d.biz_date || res.biz_date;
+    return d;
+  }
+  d = { doc_no: key, biz_type: res.biz_type || '', biz_date: res.biz_date || ymd(new Date()),
+        rows: res.rows.length ? res.rows : [emptyRow()], files: [file], source: source };
+  S.drafts.push(d);
+  return d;
 }
 
 var DRAFT_COLS = [['part_code', 'รหัสพาร์ท'], ['part_name', 'ชื่อ'], ['spec', 'สเปค'], ['batch_no', 'ล็อต'], ['qty', 'จำนวน'], ['from_loc', 'ตำแหน่ง'], ['from_wh', 'คลังต้นทาง'], ['to_wh', 'คลังปลายทาง']];
 
-function drawDraft() {
-  var d = S.draft, el = $('#nj-form'); if (!el || !d) return;
-  var totalQty = d.rows.reduce(function (s, r) { return s + (Number(r.qty) || 0); }, 0);
-  el.innerHTML =
-    '<div class="card"><div class="row wrap">' +
-    '<div class="grow"><label class="f">เลขที่เอกสาร</label><input class="f mono" data-h="doc_no" value="' + esc(d.doc_no) + '"></div>' +
-    '<div class="grow"><label class="f">ประเภท</label><input class="f" data-h="biz_type" value="' + esc(d.biz_type) + '"></div>' +
-    '<div class="grow"><label class="f">วันที่เอกสาร</label><input class="f" type="date" data-h="biz_date" value="' + esc(d.biz_date) + '"></div></div>' +
-    '<div class="small muted" style="margin-top:8px">' + d.rows.length + ' รายการ • จำนวนรวม ' + fmtQty(totalQty) + (d.file ? ' • แนบไฟล์: ' + esc(d.file.name) : '') + '</div></div>' +
-    '<div class="tablewrap"><table class="edit"><thead><tr><th>#</th>' + DRAFT_COLS.map(function (c) { return '<th>' + c[1] + '</th>'; }).join('') + '<th></th></tr></thead><tbody>' +
-    d.rows.map(function (r, i) {
-      return '<tr><td class="muted">' + (i + 1) + '</td>' + DRAFT_COLS.map(function (c) {
-        return '<td><input data-r="' + i + '" data-k="' + c[0] + '" value="' + esc(r[c[0]]) + '"' + (c[0] === 'qty' ? ' inputmode="decimal" style="width:90px"' : '') + (c[0] === 'part_name' ? ' style="min-width:200px"' : '') + '></td>';
-      }).join('') + '<td><button class="btn sm danger" data-del="' + i + '">✕</button></td></tr>';
-    }).join('') + '</tbody></table></div>' +
-    '<div class="row wrap"><button class="btn" id="nj-add">+ เพิ่มแถว</button><span class="grow"></span>' +
-    '<button class="btn" id="nj-cancel">ยกเลิก</button><button class="btn primary" id="nj-save">💾 บันทึกจ๊อบ</button></div>';
+function drawDrafts() {
+  var el = $('#nj-form'); if (!el) return;
+  var ds = S.drafts;
+  if (!ds.length) { el.innerHTML = ''; return; }
+  var totalRows = ds.reduce(function (s, d) { return s + d.rows.length; }, 0);
 
-  el.querySelectorAll('[data-h]').forEach(function (inp) { inp.oninput = function () { d[inp.getAttribute('data-h')] = inp.value; }; });
-  el.querySelectorAll('[data-r]').forEach(function (inp) {
-    inp.oninput = function () { var k = inp.getAttribute('data-k'); d.rows[+inp.getAttribute('data-r')][k] = k === 'qty' ? inp.value.replace(/[^\d.]/g, '') : inp.value; };
+  el.innerHTML =
+    '<div class="row wrap" style="margin:14px 2px 8px"><b class="grow">' + ds.length + ' เอกสาร • ' + totalRows + ' รายการ</b>' +
+    '<button class="btn sm" id="nj-clear">ล้างทั้งหมด</button>' +
+    '<button class="btn primary" id="nj-save">💾 บันทึก' + (ds.length > 1 ? 'ทั้งหมด ' + ds.length + ' จ๊อบ' : 'จ๊อบ') + '</button></div>' +
+    ds.map(draftCard).join('');
+
+  el.querySelectorAll('[data-h]').forEach(function (inp) {
+    inp.oninput = function () { ds[+inp.getAttribute('data-d')][inp.getAttribute('data-h')] = inp.value; };
   });
-  el.querySelectorAll('[data-del]').forEach(function (b) { b.onclick = function () { d.rows.splice(+b.getAttribute('data-del'), 1); drawDraft(); }; });
-  $('#nj-add').onclick = function () { var last = d.rows[d.rows.length - 1] || emptyRow(); var r = emptyRow(); r.from_wh = last.from_wh; r.to_wh = last.to_wh; d.rows.push(r); drawDraft(); };
-  $('#nj-cancel').onclick = function () { S.draft = null; renderNewJob(); };
-  $('#nj-save').onclick = function () {
-    var rows = d.rows.filter(function (r) { return String(r.part_code).trim(); });
-    if (!d.doc_no.trim()) return toast('กรุณาใส่เลขที่เอกสาร', true);
-    if (!rows.length) return toast('ยังไม่มีรายการพาร์ท', true);
-    var bad = rows.filter(function (r) { return !(Number(r.qty) > 0); }).length;
-    if (bad && !confirm('มี ' + bad + ' รายการที่จำนวนเป็น 0 ต้องการบันทึกต่อหรือไม่?')) return;
-    busy(this, authed('createJob', { doc_no: d.doc_no.trim(), biz_type: d.biz_type, biz_date: d.biz_date, rows: rows, file: d.file }))
-      .then(function (r) { S.draft = null; toast('สร้างจ๊อบแล้ว'); go('#job/' + r.job_id); }).catch(function () {});
+  el.querySelectorAll('[data-r]').forEach(function (inp) {
+    inp.oninput = function () {
+      var k = inp.getAttribute('data-k');
+      ds[S.openDraft].rows[+inp.getAttribute('data-r')][k] = k === 'qty' ? inp.value.replace(/[^\d.]/g, '') : inp.value;
+    };
+  });
+  el.querySelectorAll('[data-toggle]').forEach(function (b) {
+    b.onclick = function () { var i = +b.getAttribute('data-toggle'); S.openDraft = S.openDraft === i ? -1 : i; drawDrafts(); };
+  });
+  el.querySelectorAll('[data-remove]').forEach(function (b) {
+    b.onclick = function () {
+      var i = +b.getAttribute('data-remove');
+      if (!confirm('นำเอกสาร ' + (ds[i].doc_no || '#' + (i + 1)) + ' ออก?')) return;
+      ds.splice(i, 1); S.openDraft = -1; drawDrafts();
+    };
+  });
+  el.querySelectorAll('[data-rmfile]').forEach(function (b) {
+    b.onclick = function () { var p = b.getAttribute('data-rmfile').split(':'); ds[+p[0]].files.splice(+p[1], 1); drawDrafts(); };
+  });
+  el.querySelectorAll('[data-del]').forEach(function (b) {
+    b.onclick = function () { ds[S.openDraft].rows.splice(+b.getAttribute('data-del'), 1); drawDrafts(); };
+  });
+  var add = $('#nj-add');
+  if (add) add.onclick = function () {
+    var d = ds[S.openDraft], last = d.rows[d.rows.length - 1] || emptyRow(), r = emptyRow();
+    r.from_wh = last.from_wh; r.to_wh = last.to_wh; d.rows.push(r); drawDrafts();
   };
+  $('#nj-clear').onclick = function () { if (!confirm('ล้างเอกสารทั้งหมดที่ยังไม่บันทึก?')) return; S.drafts = []; S.openDraft = -1; njStatus(''); drawDrafts(); };
+  $('#nj-save').onclick = function () { saveAllDrafts(this); };
+}
+
+function draftCard(d, i) {
+  var totalQty = d.rows.reduce(function (s, r) { return s + (Number(r.qty) || 0); }, 0);
+  var open = S.openDraft === i;
+  var html = '<div class="card"' + (d.error ? ' style="border-color:var(--bad)"' : '') + '>' +
+    '<div class="row wrap">' +
+    '<div class="grow" style="min-width:200px"><label class="f">เลขที่เอกสาร</label><input class="f mono" data-d="' + i + '" data-h="doc_no" value="' + esc(d.doc_no) + '"></div>' +
+    '<div class="grow"><label class="f">ประเภท</label><input class="f" data-d="' + i + '" data-h="biz_type" value="' + esc(d.biz_type) + '"></div>' +
+    '<div class="grow"><label class="f">วันที่เอกสาร</label><input class="f" type="date" data-d="' + i + '" data-h="biz_date" value="' + esc(d.biz_date) + '"></div></div>' +
+    '<div class="small muted" style="margin-top:8px">' + d.rows.length + ' รายการ • จำนวนรวม ' + fmtQty(totalQty) +
+    (d.source === 'ocr' ? ' • <span style="color:var(--warn)">อ่านจากรูป ต้องตรวจทาน</span>' : '') + '</div>' +
+    (d.files.length ? '<div style="margin-top:6px">' + d.files.map(function (f, j) {
+      return '<span class="chip">📎 ' + esc(f.name) + ' <a href="javascript:void 0" data-rmfile="' + i + ':' + j + '" title="ไม่แนบไฟล์นี้">✕</a></span>';
+    }).join('') + '</div>' : '') +
+    (d.error ? '<div class="small" style="color:var(--bad);margin-top:6px">❌ ' + esc(d.error) + '</div>' : '') +
+    '<div class="row" style="margin-top:10px"><button class="btn sm" data-toggle="' + i + '">' + (open ? '▲ ซ่อนรายการ' : '▼ ดู / แก้ไขรายการ (' + d.rows.length + ')') + '</button>' +
+    '<span class="grow"></span><button class="btn sm danger" data-remove="' + i + '">นำออก</button></div></div>';
+  if (open) {
+    html += '<div class="tablewrap"><table class="edit"><thead><tr><th>#</th>' + DRAFT_COLS.map(function (c) { return '<th>' + c[1] + '</th>'; }).join('') + '<th></th></tr></thead><tbody>' +
+      d.rows.map(function (r, k) {
+        return '<tr><td class="muted">' + (k + 1) + '</td>' + DRAFT_COLS.map(function (c) {
+          return '<td><input data-r="' + k + '" data-k="' + c[0] + '" value="' + esc(r[c[0]]) + '"' + (c[0] === 'qty' ? ' inputmode="decimal" style="width:90px"' : '') + (c[0] === 'part_name' ? ' style="min-width:200px"' : '') + '></td>';
+        }).join('') + '<td><button class="btn sm danger" data-del="' + k + '">✕</button></td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="row" style="margin:-2px 0 12px"><button class="btn sm" id="nj-add">+ เพิ่มแถว</button></div>';
+  }
+  return html;
+}
+
+function saveAllDrafts(btn) {
+  var ds = S.drafts;
+  var problems = [];
+  ds.forEach(function (d, i) {
+    d.rows = d.rows.filter(function (r) { return String(r.part_code).trim(); });
+    var name = d.doc_no || 'เอกสารที่ ' + (i + 1);
+    if (!d.doc_no.trim()) problems.push(name + ': ยังไม่ใส่เลขที่เอกสาร');
+    else if (!d.rows.length) problems.push(name + ': ไม่มีรายการพาร์ท');
+  });
+  var seen = {};
+  ds.forEach(function (d) { var k = d.doc_no.trim(); if (k && seen[k]) problems.push(k + ': เลขที่เอกสารซ้ำกันในรายการนี้'); seen[k] = 1; });
+  if (problems.length) { drawDrafts(); return toast(problems[0], true); }
+  var zero = ds.reduce(function (s, d) { return s + d.rows.filter(function (r) { return !(Number(r.qty) > 0); }).length; }, 0);
+  if (zero && !confirm('มี ' + zero + ' รายการที่จำนวนเป็น 0 ต้องการบันทึกต่อหรือไม่?')) return;
+
+  var created = [];
+  var chain = Promise.resolve();
+  ds.forEach(function (d, i) {
+    chain = chain.then(function () {
+      njStatus('<span class="spinner"></span> กำลังบันทึก ' + esc(d.doc_no) + ' (' + (i + 1) + '/' + ds.length + ')…');
+      return authed('createJob', { doc_no: d.doc_no.trim(), biz_type: d.biz_type, biz_date: d.biz_date, rows: d.rows, files: d.files })
+        .then(function (r) { created.push(r.job_id); d.saved = true; d.error = ''; },
+              function (e) { d.error = e.message; });
+    });
+  });
+  busy(btn, chain.then(function () {
+    S.drafts = ds.filter(function (d) { return !d.saved; });
+    S.openDraft = -1;
+    if (!S.drafts.length) {
+      njStatus('');
+      toast('สร้างแล้ว ' + created.length + ' จ๊อบ');
+      go(created.length === 1 ? '#job/' + created[0] : '#jobs');
+    } else {
+      njStatus((created.length ? '✅ บันทึกแล้ว ' + created.length + ' จ๊อบ • ' : '') + '❌ ยังบันทึกไม่ได้ ' + S.drafts.length + ' เอกสาร (ดูข้อความสีแดง)');
+      drawDrafts();
+    }
+  })).catch(function () {});
 }
 
 // ======================= Dashboard =======================
