@@ -5,7 +5,7 @@
 
 // ======================= ค่าคงที่ =======================
 const SHEETS = {
-  Users:    ['emp_code', 'name', 'role', 'pin_hash', 'salt', 'active', 'created_at'],
+  Users:    ['emp_code', 'name', 'role', 'pin', 'active', 'created_at'],
   Jobs:     ['job_id', 'doc_no', 'biz_type', 'biz_date', 'from_wh', 'to_wh', 'line_count', 'status',
              'file_url', 'created_by', 'created_at', 'started_at', 'finished_at'],
   Lines:    ['line_id', 'job_id', 'doc_no', 'line_no', 'part_code', 'part_name', 'spec', 'batch_no', 'qty',
@@ -23,7 +23,7 @@ const DEFAULT_SETTINGS = [
 
 // คอลัมน์ที่ต้องเก็บเป็นข้อความ (กันเลข 0 นำหน้าหาย / กันแปลงเป็นวันที่)
 const TEXT_COLS = {
-  Users: ['emp_code', 'pin_hash', 'salt'],
+  Users: ['emp_code', 'pin'],
   Jobs:  ['job_id', 'doc_no', 'biz_date'],
   Lines: ['line_id', 'job_id', 'doc_no', 'part_code', 'spec', 'batch_no', 'from_loc', 'picked_by']
 };
@@ -125,6 +125,7 @@ function book_() {
 function table_(name) {
   const sh = book_().getSheetByName(name);
   if (!sh) throw new Error('ยังไม่ได้ตั้งค่าระบบ (ไม่พบชีต ' + name + ')');
+  if (name === 'Users') migrateUsers_(sh);
   const values = sh.getDataRange().getValues();
   const headers = values[0];
   const rows = values.slice(1).map((v, i) => {
@@ -171,9 +172,26 @@ function settings_() {
 }
 
 // ======================= ผู้ใช้ & Login =======================
-function hash_(salt, pin) {
-  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + ':' + pin, Utilities.Charset.UTF_8);
-  return bytes.map(b => ('0' + (b & 0xff).toString(16)).slice(-2)).join('');
+/**
+ * ชีต Users แบบเก่าเก็บ PIN เป็นรหัส hex (pin_hash + salt) → เปลี่ยนเป็นคอลัมน์ pin ตัวเลขธรรมดา
+ * PIN เดิมกู้คืนไม่ได้ จึงเว้นว่างไว้ ให้ผู้ดูแลพิมพ์ PIN ใหม่ลงในชีตได้เลย
+ */
+function migrateUsers_(sh) {
+  const lastCol = sh.getLastColumn ? sh.getLastColumn() : sh.getDataRange().getValues()[0].length;
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  const hashCol = headers.indexOf('pin_hash') + 1;
+  if (!hashCol) return;
+  const n = Math.max(sh.getLastRow() - 1, 0);
+  sh.getRange(1, hashCol).setValue('pin');
+  sh.getRange(1, hashCol, sh.getMaxRows(), 1).setNumberFormat('@');
+  if (n) sh.getRange(2, hashCol, n, 1).setValues(Array(n).fill(['']));
+  const saltCol = headers.indexOf('salt') + 1;
+  if (saltCol) sh.deleteColumn(saltCol);
+}
+
+function pinOk_(stored, given) {
+  const s = String(stored == null ? '' : stored).trim();
+  return s !== '' && s === String(given == null ? '' : given).trim();
 }
 
 function upsertUser_(u) {
@@ -191,8 +209,7 @@ function upsertUser_(u) {
     row.active = u.active !== false;
     if (u.pin) {
       if (!/^\d{4,8}$/.test(String(u.pin))) throw new Error('PIN ต้องเป็นตัวเลข 4-8 หลัก');
-      row.salt = Utilities.getUuid();
-      row.pin_hash = hash_(row.salt, String(u.pin));
+      row.pin = String(u.pin);
     } else if (isNew) {
       throw new Error('ผู้ใช้ใหม่ต้องตั้ง PIN');
     }
@@ -209,7 +226,7 @@ function login(empCode, pin) {
   if (fails >= 5) throw new Error('ใส่ PIN ผิดหลายครั้ง กรุณารอ 5 นาที');
 
   const user = table_('Users').rows.filter(r => sameCode_(r.emp_code, code))[0];
-  if (!user || !isTrue_(user.active) || hash_(user.salt, String(pin)) !== user.pin_hash) {
+  if (!user || !isTrue_(user.active) || !pinOk_(user.pin, pin)) {
     cache.put(failKey, String(fails + 1), 300);
     throw new Error('รหัสพนักงานหรือ PIN ไม่ถูกต้อง');
   }

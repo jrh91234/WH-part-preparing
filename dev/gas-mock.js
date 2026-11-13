@@ -28,6 +28,7 @@
     persist(); return this;
   };
   Range.prototype.setNumberFormat = function () { return this; };
+  Range.prototype.setValue = function (v) { return this.setValues([[v]]); };
 
   function Sheet(name) { this.name = name; }
   Sheet.prototype.getDataRange = function () { var d = sheets[this.name]; var nc = d.reduce(function (m, r) { return Math.max(m, r.length); }, 0); return new Range(this, 1, 1, Math.max(d.length, 1), Math.max(nc, 1)); };
@@ -37,6 +38,8 @@
   Sheet.prototype.getRange = function (r, c, nr, nc) { return new Range(this, r, c, nr || 1, nc || 1); };
   Sheet.prototype.setFrozenRows = function () {};
   Sheet.prototype.deleteRow = function (r) { sheets[this.name].splice(r - 1, 1); persist(); };
+  Sheet.prototype.deleteColumn = function (c) { sheets[this.name].forEach(function (row) { row.splice(c - 1, 1); }); persist(); };
+  Sheet.prototype.getLastColumn = function () { return sheets[this.name].reduce(function (m, r) { return Math.max(m, r.length); }, 0); };
 
   var book = {
     getId: function () { return 'mock-book'; },
