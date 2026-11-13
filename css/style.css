@@ -118,3 +118,7 @@ table.edit input { width: 100%; min-width: 70px; padding: 6px; border: 1px solid
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -3px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .drop { border: 2px dashed var(--line); border-radius: var(--radius); padding: 18px; text-align: center; background: var(--card); }
+.sheet-bg { position: fixed; inset: 0; z-index: 40; background: rgba(15,23,35,.45); display: flex; align-items: flex-end; justify-content: center; }
+.sheet { background: var(--card); width: 100%; max-width: 520px; border-radius: 16px 16px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); box-shadow: 0 -6px 24px rgba(0,0,0,.2); }
+.sheet h3 { margin: 0 0 4px; font-size: 18px; }
+.sheet .btn.sm.active { background: var(--warn); color: #fff; border-color: var(--warn); }

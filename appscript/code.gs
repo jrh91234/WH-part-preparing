@@ -10,7 +10,7 @@ const SHEETS = {
              'file_url', 'created_by', 'created_at', 'started_at', 'finished_at'],
   Lines:    ['line_id', 'job_id', 'doc_no', 'line_no', 'part_code', 'part_name', 'spec', 'batch_no', 'qty',
              'from_wh', 'from_loc', 'to_wh', 'status', 'picked_by', 'picked_name',
-             'started_at', 'finished_at', 'minutes', 'issue_note'],
+             'started_at', 'finished_at', 'minutes', 'issue_note', 'picked_qty'],
   Settings: ['key', 'value', 'description']
 };
 
@@ -127,7 +127,13 @@ function table_(name) {
   if (!sh) throw new Error('ยังไม่ได้ตั้งค่าระบบ (ไม่พบชีต ' + name + ')');
   if (name === 'Users') migrateUsers_(sh);
   const values = sh.getDataRange().getValues();
-  const headers = values[0];
+  let headers = values[0];
+  // เพิ่มคอลัมน์ใหม่ต่อท้ายให้ชีตเดิมอัตโนมัติ (เช่น picked_qty)
+  const missing = (SHEETS[name] || []).filter(h => headers.indexOf(h) < 0);
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+    headers = headers.concat(missing);
+  }
   const rows = values.slice(1).map((v, i) => {
     const o = { _row: i + 2 };
     headers.forEach((h, j) => { o[h] = v[j]; });
@@ -353,7 +359,8 @@ function lineOut_(l) {
     part_code: l.part_code, part_name: l.part_name, spec: l.spec, batch_no: String(l.batch_no),
     qty: l.qty, from_wh: l.from_wh, from_loc: l.from_loc, to_wh: l.to_wh, status: l.status,
     picked_by: String(l.picked_by || ''), picked_name: l.picked_name, started_at: iso_(l.started_at),
-    finished_at: iso_(l.finished_at), minutes: l.minutes, issue_note: l.issue_note
+    finished_at: iso_(l.finished_at), minutes: l.minutes, issue_note: l.issue_note,
+    picked_qty: l.picked_qty === '' || l.picked_qty == null ? '' : Number(l.picked_qty)
   };
 }
 
@@ -487,14 +494,21 @@ function finishLine(token, lineId) {
   return updateLine_(token, lineId, (line, s, now) => {
     if (line.status !== 'picking' || !sameCode_(line.picked_by, s.code)) throw new Error('รายการนี้ไม่ใช่งานที่คุณกำลังทำ');
     line.status = 'done';
+    line.picked_qty = Number(line.qty) || 0;
     line.finished_at = now;
     line.minutes = round2_((now - line.started_at) / 60000);
   });
 }
 
-function reportIssue(token, lineId, note) {
+/** จัดได้ไม่ครบ / มีปัญหา — บันทึกจำนวนที่จัดได้จริง + สาเหตุ */
+function reportIssue(token, lineId, note, pickedQty) {
   return updateLine_(token, lineId, (line, s, now) => {
     if (line.status !== 'picking' || !sameCode_(line.picked_by, s.code)) throw new Error('ต้องกดรับงานก่อนจึงจะแจ้งปัญหาได้');
+    const q = Number(pickedQty);
+    if (pickedQty === '' || pickedQty == null || isNaN(q) || q < 0) throw new Error('กรุณาใส่จำนวนที่จัดได้ (0 ขึ้นไป)');
+    if (q >= Number(line.qty)) throw new Error('จำนวนครบตามใบงานแล้ว ให้กด "เสร็จ" แทน');
+    if (!String(note || '').trim()) throw new Error('กรุณาเลือกสาเหตุ');
+    line.picked_qty = q;
     line.status = 'issue';
     line.finished_at = now;
     line.minutes = round2_((now - line.started_at) / 60000);
@@ -520,7 +534,7 @@ function resetLine(token, lineId) {
 
 function clearLine_(line) {
   line.status = 'pending';
-  ['picked_by', 'picked_name', 'started_at', 'finished_at', 'minutes', 'issue_note'].forEach(k => { line[k] = ''; });
+  ['picked_by', 'picked_name', 'started_at', 'finished_at', 'minutes', 'issue_note', 'picked_qty'].forEach(k => { line[k] = ''; });
 }
 
 // ======================= Dashboard =======================
@@ -556,7 +570,7 @@ function getDashboard(token, fromYmd, toYmd) {
   const workers = {};
   closed.forEach(l => {
     const w = workers[l.picked_by] = workers[l.picked_by] || { emp_code: String(l.picked_by), name: l.picked_name, lines: 0, man_min: 0, qty: 0, issues: 0 };
-    w.lines++; w.man_min += Number(l.minutes) || 0; w.qty += Number(l.qty) || 0;
+    w.lines++; w.man_min += Number(l.minutes) || 0; w.qty += l.picked_qty === '' ? (Number(l.qty) || 0) : (Number(l.picked_qty) || 0);
     if (l.status === 'issue') w.issues++;
   });
   const workerList = Object.keys(workers).map(k => {
@@ -589,6 +603,8 @@ function getDashboard(token, fromYmd, toYmd) {
     settings: st,
     totals: {
       lines: closed.length, issues: closed.filter(l => l.status === 'issue').length,
+      short_qty: closed.filter(l => l.status === 'issue' && l.picked_qty !== '')
+        .reduce((s, l) => s + Math.max(0, (Number(l.qty) || 0) - (Number(l.picked_qty) || 0)), 0),
       man_min: round2_(totalMan), jobs_done: jobList.length,
       avg_lead_min: jobList.length ? round2_(jobList.reduce((s, j) => s + j.lead_min, 0) / jobList.length) : 0,
       avg_min_per_line: closed.length ? round2_(totalMan / closed.length) : 0,

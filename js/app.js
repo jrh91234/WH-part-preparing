@@ -229,7 +229,7 @@ function lineCard(l) {
   } else if (mine) {
     act = '<span class="badge picking">⏱ <span data-since="' + esc(l.started_at) + '"></span></span><span class="grow"></span>' +
       '<button class="btn sm" onclick="uiRelease(\'' + id + '\', this)">ยกเลิก</button>' +
-      '<button class="btn sm warn" onclick="issueLine(\'' + id + '\', this)">⚠ ปัญหา</button>' +
+      '<button class="btn sm warn" onclick="issueLine(\'' + id + '\', this)">⚠ จัดไม่ครบ</button>' +
       '<button class="btn ok" onclick="uiFinish(\'' + id + '\', this)">เสร็จ ✓</button>';
   } else if (l.status === 'picking') {
     act = '<span class="small">👤 ' + esc(l.picked_name) + ' กำลังจัด • <span data-since="' + esc(l.started_at) + '"></span></span><span class="grow"></span>' +
@@ -238,11 +238,11 @@ function lineCard(l) {
     act = '<span class="small">✓ ' + esc(l.picked_name) + ' • ' + fmtTime(l.started_at) + '–' + fmtTime(l.finished_at) + ' • <b>' + fmtMin(l.minutes) + '</b></span>' +
       (can('leader') ? '<span class="grow"></span><button class="btn sm" onclick="uiReset(\'' + id + '\', this)">เปิดใหม่</button>' : '');
   } else if (l.status === 'issue') {
-    act = '<span class="small">⚠ ' + esc(l.picked_name) + ': <b>' + esc(l.issue_note) + '</b> • ' + fmtMin(l.minutes) + '</span>' +
+    act = '<span class="small">⚠ ' + esc(l.picked_name) + ' จัดได้ <b>' + (l.picked_qty === '' ? '-' : fmtQty(l.picked_qty)) + '/' + fmtQty(l.qty) + '</b> • ' + esc(l.issue_note) + ' • ' + fmtMin(l.minutes) + '</span>' +
       (can('leader') ? '<span class="grow"></span><button class="btn sm" onclick="uiReset(\'' + id + '\', this)">เปิดให้จัดใหม่</button>' : '');
   }
   return '<div class="card st-' + (mine ? 'mine' : l.status) + '"><div class="line">' + locHtml(l.from_loc) +
-    '<div class="body"><div class="row"><span class="code mono grow">' + esc(l.part_code) + '</span><span class="qty">' + fmtQty(l.qty) + '</span></div>' +
+    '<div class="body"><div class="row"><span class="code mono grow">' + esc(l.part_code) + '</span><span class="qty">' + (l.status === 'issue' && l.picked_qty !== '' ? '<span style="color:var(--warn)">' + fmtQty(l.picked_qty) + '</span><span class="small muted">/' + fmtQty(l.qty) + '</span>' : fmtQty(l.qty)) + '</span></div>' +
     '<div class="name">' + esc(l.part_name) + '</div>' +
     '<div class="meta">' + esc(l.spec) + ' • ล็อต <span class="mono">' + esc(l.batch_no) + '</span> • #' + l.line_no + '</div></div></div>' +
     '<div class="line-status">' + act + '</div></div>';
@@ -256,11 +256,51 @@ function uiClaim(id, btn) { busy(btn, authed('claimLine', id)).then(function () 
 function uiFinish(id, btn) { busy(btn, authed('finishLine', id)).then(function (l) { toast('บันทึกแล้ว • ' + fmtMin(l.minutes)); S.myActive = null; renderActiveBar(); afterLineChange(); }).catch(function () {}); }
 function uiRelease(id, btn) { if (!confirm('ยกเลิกการรับงานรายการนี้? (เวลาที่จับไว้จะไม่ถูกบันทึก)')) return; busy(btn, authed('releaseLine', id)).then(afterLineChange).catch(function () {}); }
 function uiReset(id, btn) { if (!confirm('เปิดรายการนี้ให้จัดใหม่? (ข้อมูลเวลาเดิมของรายการนี้จะถูกล้าง)')) return; busy(btn, authed('resetLine', id)).then(afterLineChange).catch(function () {}); }
-function issueLine(id, btn) {
-  var pick = prompt('ปัญหาที่พบ (พิมพ์หมายเลข หรือพิมพ์ข้อความเอง)\n' + ISSUE_REASONS.map(function (r, i) { return (i + 1) + ') ' + r; }).join('\n'));
-  if (pick == null || !pick.trim()) return;
-  var note = ISSUE_REASONS[Number(pick) - 1] || pick.trim();
-  busy(btn, authed('reportIssue', id, note)).then(function () { toast('แจ้งปัญหาแล้ว'); S.myActive = null; renderActiveBar(); afterLineChange(); }).catch(function () {});
+/** ฟอร์มจัดไม่ครบ: ใส่จำนวนที่จัดได้จริง + สาเหตุ */
+function issueLine(id) {
+  var l = (S.jobData && S.jobData.lines || []).filter(function (x) { return x.line_id === id; })[0] || S.myActive;
+  if (!l) return;
+  var box = document.createElement('div');
+  box.className = 'sheet-bg';
+  box.innerHTML = '<div class="sheet"><h3>⚠ จัดไม่ครบ / มีปัญหา</h3>' +
+    '<div class="small muted">' + esc(l.part_code) + ' • ' + esc(LOC_TH[l.from_loc] || l.from_loc) + ' • ล็อต ' + esc(l.batch_no) + '</div>' +
+    '<label class="f">จำนวนที่จัดได้จริง (ใบงานสั่ง ' + fmtQty(l.qty) + ')</label>' +
+    '<div class="row"><input id="iq-qty" class="f" type="number" inputmode="numeric" min="0" step="any" placeholder="0" style="font-size:22px;font-weight:700">' +
+    '<span class="muted" style="white-space:nowrap">/ ' + fmtQty(l.qty) + '</span></div>' +
+    '<div id="iq-short" class="small" style="color:var(--warn);min-height:20px;margin-top:4px"></div>' +
+    '<label class="f">สาเหตุ</label><div class="row wrap" id="iq-reasons">' +
+    ISSUE_REASONS.map(function (r) { return '<button type="button" class="btn sm" data-reason="' + esc(r) + '">' + esc(r) + '</button>'; }).join('') + '</div>' +
+    '<input id="iq-note" class="f hidden" placeholder="ระบุสาเหตุ" style="margin-top:8px" maxlength="150">' +
+    '<div class="row" style="margin-top:16px"><button class="btn grow" id="iq-cancel">ยกเลิก</button><button class="btn warn grow" id="iq-save">บันทึก</button></div></div>';
+  document.body.appendChild(box);
+  var reason = '', qtyEl = box.querySelector('#iq-qty'), noteEl = box.querySelector('#iq-note');
+  function close() { box.remove(); }
+  qtyEl.oninput = function () {
+    var q = Number(qtyEl.value), el = box.querySelector('#iq-short');
+    el.textContent = qtyEl.value === '' ? '' : (q >= Number(l.qty) ? 'จำนวนครบแล้ว — ให้กด "เสร็จ ✓" แทน' : 'ขาด ' + fmtQty(Number(l.qty) - q) + ' ชิ้น');
+  };
+  box.querySelectorAll('[data-reason]').forEach(function (b) {
+    b.onclick = function () {
+      reason = b.getAttribute('data-reason');
+      box.querySelectorAll('[data-reason]').forEach(function (x) { x.classList.toggle('active', x === b); });
+      noteEl.classList.toggle('hidden', reason !== 'อื่นๆ');
+      if (reason === 'อื่นๆ') noteEl.focus();
+    };
+  });
+  box.querySelector('#iq-cancel').onclick = close;
+  box.onclick = function (e) { if (e.target === box) close(); };
+  box.querySelector('#iq-save').onclick = function () {
+    if (qtyEl.value === '' || Number(qtyEl.value) < 0) return toast('กรุณาใส่จำนวนที่จัดได้', true);
+    if (Number(qtyEl.value) >= Number(l.qty)) return toast('จำนวนครบแล้ว ให้กด "เสร็จ ✓" แทน', true);
+    if (!reason) return toast('กรุณาเลือกสาเหตุ', true);
+    var note = reason === 'อื่นๆ' ? (noteEl.value.trim() || 'อื่นๆ') : reason;
+    var qty = Number(qtyEl.value);
+    busy(this, authed('reportIssue', id, note, qty)).then(function () {
+      close(); toast('บันทึกแล้ว: จัดได้ ' + fmtQty(qty) + '/' + fmtQty(l.qty));
+      S.myActive = null; renderActiveBar(); afterLineChange();
+    }).catch(function () {});
+  };
+  setTimeout(function () { qtyEl.focus(); }, 50);
 }
 function uiDeleteJob(id, btn) {
   if (!confirm('ลบจ๊อบนี้ทั้งหมด?')) return;
@@ -539,9 +579,13 @@ function drawDashboard(r) {
       return ['<a href="#job/' + esc(j.job_id) + '" class="mono">' + esc(j.doc_no) + '</a>', j.lines, fmtMin(j.wait_min), '<b>' + fmtMin(j.lead_min) + '</b>', fmtMin(j.man_min), j.people.length, esc(j.people.join(', '))];
     }), [1, 2, 3, 4, 5]);
   if (r.issues.length) {
-    html += '<div class="section-title">ปัญหาที่แจ้ง</div>' + table(['เวลา', 'เอกสาร', 'พาร์ท', 'ตำแหน่ง', 'ผู้แจ้ง', 'ปัญหา'], r.issues.map(function (l) {
-      return [fmtDateTime(l.finished_at), esc(l.doc_no), esc(l.part_code), esc(l.from_loc), esc(l.picked_name), esc(l.issue_note)];
-    }), []);
+    html += '<div class="section-title">จัดไม่ครบ / ปัญหา' + (t.short_qty ? ' • ขาดรวม ' + fmtQty(t.short_qty) + ' ชิ้น' : '') + '</div>' +
+      table(['เวลา', 'เอกสาร', 'พาร์ท', 'ตำแหน่ง', 'จัดได้/สั่ง', 'ขาด', 'ผู้จัด', 'สาเหตุ'], r.issues.map(function (l) {
+        var got = l.picked_qty === '' ? null : Number(l.picked_qty);
+        return [fmtDateTime(l.finished_at), esc(l.doc_no), esc(l.part_code), esc(l.from_loc),
+                (got === null ? '-' : fmtQty(got)) + '/' + fmtQty(l.qty), got === null ? '-' : '<b>' + fmtQty(Number(l.qty) - got) + '</b>',
+                esc(l.picked_name), esc(l.issue_note)];
+      }), [4, 5]);
   }
   if (can('admin')) html += settingsForm(st);
   $('#dash').innerHTML = html;
@@ -568,7 +612,7 @@ function settingsForm(st) {
 
 function exportCsv() {
   var r = S.dashData; if (!r) return;
-  var cols = ['doc_no', 'line_no', 'part_code', 'part_name', 'spec', 'batch_no', 'qty', 'from_loc', 'status', 'picked_by', 'picked_name', 'started_at', 'finished_at', 'minutes', 'issue_note'];
+  var cols = ['doc_no', 'line_no', 'part_code', 'part_name', 'spec', 'batch_no', 'qty', 'picked_qty', 'from_loc', 'status', 'picked_by', 'picked_name', 'started_at', 'finished_at', 'minutes', 'issue_note'];
   var lines = [cols.join(',')].concat(r.lines.map(function (l) {
     return cols.map(function (c) {
       var v = l[c]; if (c === 'started_at' || c === 'finished_at') v = v ? fmtLocalIso(v) : '';
